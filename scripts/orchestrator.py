@@ -1,19 +1,16 @@
 from prefect import flow, task
-from alerce.core import Alerce # Importing Alerce to access the API for supernova data
+from alerce.core import Alerce
 import duckdb
 import pandas as pd
 import time
-from datetime import datetime
-import os
 
 # Initializing Alerce client:
 client = Alerce()
-DB_NAME = "scripts/universe.duckdb" # Local DuckDB database file
-TARGET_RECORDS = 100000 # Setting data record target
-
+DB_NAME = "universe.duckdb" 
+TARGET_RECORDS = 100000 
 
 # == TASKS ==
-# 1) Initializing DuckDB Database:
+
 @task(name="Initialize Database")
 def init_db():
     """Creates the table with proper constraints."""
@@ -28,11 +25,10 @@ def init_db():
             ra DOUBLE,
             dec DOUBLE,
             inserted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (oid, mjd, fid)  -- Prevent duplicates
+            PRIMARY KEY (oid, mjd, fid)
         )
     """)
     
-    # Track processed candidates to avoid re-fetching
     con.execute("""
         CREATE TABLE IF NOT EXISTS processed_candidates (
             oid VARCHAR PRIMARY KEY,
@@ -44,18 +40,15 @@ def init_db():
     processed = con.execute("SELECT COUNT(*) FROM processed_candidates").fetchone()[0]
     con.close()
     
-    # printing initialization results:
     print("Database initialized successfully.")
     print(f"Current record count: {count:,}, Processed candidates: {processed:,}")
     
     return count, processed
 
-# 2) Getting already processed OIDs: OIDs are unique object identifiers for supernovae
 @task(name="Get Processed OIDs")
 def get_processed_oids():
     """Returns set of already-processed candidate IDs."""
     con = duckdb.connect(DB_NAME)
-    # Querying db for all OIDs we have processed:
     result = con.execute("SELECT oid FROM processed_candidates").fetchall()
     con.close()
     oid_set = set(row[0] for row in result)
@@ -64,18 +57,18 @@ def get_processed_oids():
 
 @task(name="Fetch Batch")
 def fetch_batch(page_number, processed_oids):
-    """Fetches one page of Supernovae and their light curves."""
+    """Fetches one page of Supernovae."""
     print(f"Fetching page {page_number}...")
     
     try:
-        # Get Candidates with better filters
+        # Get Candidates
         candidates = client.query_objects(
             classifier="stamp_classifier", 
             class_name="SN", 
-            probability=0.7,  # Higher quality: means AI is 70% confident in identification
-            page_size=50,     # larger batch size for quicker fetches
+            probability=0.7,
+            page_size=50,
             page=page_number,
-            firstmjd=60000,   # Recent events only (~2023+)
+            firstmjd=60000, 
             format="pandas"
         )
         
@@ -142,7 +135,7 @@ def save_batch(df, processed_oids):
     con = duckdb.connect(DB_NAME)
     
     try:
-        # Insert detections - explicitly specify columns (without inserted_at)
+        # Insert detections
         con.execute("""
             INSERT OR IGNORE INTO supernovae (oid, mjd, magpsf, fid, sigmapsf, ra, dec)
             SELECT oid, mjd, magpsf, fid, sigmapsf, ra, dec FROM df
@@ -166,7 +159,6 @@ def save_batch(df, processed_oids):
     return total
 
 # == FLOW == 
-# 3) Main Harvesting Loop with resume capability (in case of interruptions):
 @flow(name="Supernova Ingestion Loop", log_prints=True)
 def start_harvest():
     """Main loop with resume capability."""
@@ -176,7 +168,7 @@ def start_harvest():
     
     page = 1
     empty_pages = 0
-    max_empty_pages = 5  # Stop after 5 consecutive empty pages
+    max_empty_pages = 5 
     
     print("="*60)
     print("Starting supernova data harvest...")
@@ -187,14 +179,14 @@ def start_harvest():
     
     start_time = time.time()
     
-    while current_count < TARGET_RECORDS: # Main loop
+    while current_count < TARGET_RECORDS: 
         # Fetch
         new_data, new_oids = fetch_batch(page, processed_oids)
         
-        # Save:
+        # Save
         if not new_data.empty:
             current_count = save_batch(new_data, new_oids)
-            processed_oids.update(new_oids)  # Update in-memory set
+            processed_oids.update(new_oids)
             
             progress = (current_count / TARGET_RECORDS) * 100
             elapsed = time.time() - start_time
@@ -202,7 +194,7 @@ def start_harvest():
             
             print(f"Progress: {current_count:,}/{TARGET_RECORDS:,} ({progress:.1f}%) | Rate: {rate:.0f} records/sec")
             
-            empty_pages = 0  # Reset counter
+            empty_pages = 0 
         else:
             empty_pages += 1
             print(f"Empty batch ({empty_pages}/{max_empty_pages})")
@@ -213,7 +205,7 @@ def start_harvest():
         
         # Increment and rate limit
         page += 1
-        time.sleep(3.0)  # Sleep timer to handle throttling
+        time.sleep(3.0) 
     
     elapsed_total = time.time() - start_time
     print("="*60)
