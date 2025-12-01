@@ -60,7 +60,6 @@ plt.savefig(gm_plot_filename, dpi=300)
 print(f"Saved 'galactic_map.png' to {gm_plot_filename}")
 
 
-# ==========================================
 # PLOT 2: THE LIGHT CURVE
 # ==========================================
 

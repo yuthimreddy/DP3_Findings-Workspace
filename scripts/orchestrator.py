@@ -1,3 +1,4 @@
+# Importing necessary libraries
 from prefect import flow, task
 from alerce.core import Alerce
 import duckdb
@@ -5,19 +6,20 @@ import pandas as pd
 import time
 
 # Initializing Alerce client:
-client = Alerce()
+client = Alerce() # Allows us to query supernova data from Alerce
 DB_NAME = "universe.duckdb" 
 TARGET_RECORDS = 100000 
 
 # == TASKS ==
 
+# Database Initialization: Defines the database schema and ensures tables exist.
 @task(name="Initialize Database")
 def init_db():
     """Creates the table with proper constraints."""
     con = duckdb.connect(DB_NAME)
     con.execute("""
         CREATE TABLE IF NOT EXISTS supernovae (
-            oid VARCHAR, 
+            oid VARCHAR,
             mjd DOUBLE, 
             magpsf DOUBLE, 
             fid INTEGER, 
@@ -27,7 +29,8 @@ def init_db():
             inserted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (oid, mjd, fid)
         )
-    """)
+    """) # Create table for supernova detections with primary key constraint being (oid, mjd, fid):
+    # oid = object ID, mjd = modified julian date, magpsf = magnitude, fid = filter ID, sigmapsf = magnitude error, ra = right ascension, dec = declination
     
     con.execute("""
         CREATE TABLE IF NOT EXISTS processed_candidates (
@@ -36,25 +39,28 @@ def init_db():
         )
     """)
     
+    # Get current counts
     count = con.execute("SELECT COUNT(*) FROM supernovae").fetchone()[0]
     processed = con.execute("SELECT COUNT(*) FROM processed_candidates").fetchone()[0]
     con.close()
-    
+    # Log/status message:
     print("Database initialized successfully.")
     print(f"Current record count: {count:,}, Processed candidates: {processed:,}")
     
     return count, processed
-
+# Retrieve Processed OIDs: Fetches the set of already processed candidate IDs to avoid duplicates
 @task(name="Get Processed OIDs")
 def get_processed_oids():
     """Returns set of already-processed candidate IDs."""
     con = duckdb.connect(DB_NAME)
     result = con.execute("SELECT oid FROM processed_candidates").fetchall()
     con.close()
-    oid_set = set(row[0] for row in result)
+    oid_set = set(row[0] for row in result) # Create a set of processed OIDs for quick lookup
     print(f"Loaded {len(oid_set):,} previously processed OIDs")
     return oid_set
 
+# Fetch Batch: function which fetches one page of supernova candidates and their detections from Alerce
+# The function filters out already processed candidates and returns new data
 @task(name="Fetch Batch")
 def fetch_batch(page_number, processed_oids):
     """Fetches one page of Supernovae."""
@@ -88,7 +94,7 @@ def fetch_batch(page_number, processed_oids):
         # Get Detections
         batch_detections = []
         processed_oids_batch = []
-        
+        # Iterate over new candidates to fetch their detections
         for idx, row in new_candidates.iterrows():
             oid = row['oid']
             try:
@@ -113,7 +119,7 @@ def fetch_batch(page_number, processed_oids):
             except Exception as e:
                 print(f"Error fetching {oid}: {e}")
                 continue
-        
+        # Combine all detections into a single DataFrame
         if batch_detections:
             result_df = pd.concat(batch_detections, ignore_index=True)
             print(f"Page {page_number}: Retrieved {len(result_df)} detections from {len(processed_oids_batch)} objects")
@@ -125,7 +131,7 @@ def fetch_batch(page_number, processed_oids):
     except Exception as e:
         print(f"Page {page_number}: Batch fetch failed - {e}")
         return pd.DataFrame(), []
-
+# Save Batch: function which saves a batch of detections to our database
 @task(name="Save to DuckDB")
 def save_batch(df, processed_oids):
     """Inserts data using INSERT OR IGNORE to handle duplicates."""
@@ -173,12 +179,13 @@ def start_harvest():
     print("="*60)
     print("Starting supernova data harvest...")
     print(f"Target: {TARGET_RECORDS:,} detection records")
-    print(f"Current: {current_count:,} records")
+    print(f"Current: {current_count:,} records") # displays current count of records in the database
     print(f"Already processed: {processed_count:,} candidates")
     print("="*60)
     
     start_time = time.time()
     
+    # keep retrieving data until we reach target of 100,000 records
     while current_count < TARGET_RECORDS: 
         # Fetch
         new_data, new_oids = fetch_batch(page, processed_oids)
@@ -207,6 +214,7 @@ def start_harvest():
         page += 1
         time.sleep(3.0) 
     
+    # Final report (show how many records and time taken)
     elapsed_total = time.time() - start_time
     print("="*60)
     print(f"DATA INGESTION COMPLETE!")
